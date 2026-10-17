@@ -1,14 +1,14 @@
 """
-Aegis Vault 4.0 - Zero-Trust, Post-Quantum Cryptographic Suite & Secure P2P Ecosystem
+Aegis Vault 4.1.0 - Zero-Trust, Post-Quantum Cryptographic Suite & Secure P2P Ecosystem
 Features:
 1. Multi-User Profiles (Isolated credentials and encrypted storage per user/machine)
 2. Hardware-Bound Profiles (Hardware fingerprint binding - vault cannot be opened on other PCs)
-3. Live P2P Encrypted Chat Network (Worldwide end-to-end AES-256-GCM relay)
+3. Live P2P Encrypted Chat Network (Worldwide end-to-end AES-256-GCM + Ed25519 relay)
 4. Air-Gapped Optical QR Cryptography (OpenCV computer vision + high-density QR)
 5. Blockchain-Verified Live Cold Storage Portfolio (Blockchain.info API + Binance rates)
-6. Automatic GitHub Releases Update Detection
+6. Automatic GitHub Releases Update Detection (SHA-256 + PE Header Verified)
 7. Trilingual Localization (Turkish, English, Russian)
-8. FIPS 140-3 Power-On Self-Tests (POST) and Merkle Hash-Chained Audit Trail
+8. FIPS 140-3 Power-On Self-Tests (POST) and HMAC-Authenticated Merkle Audit Trail
 """
 
 import os
@@ -50,7 +50,7 @@ class AegisVaultApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        self.title("AegisVault 4.0.0 - Zero-Trust Cryptographic Suite & P2P")
+        self.title("AegisVault 4.1.0 - Zero-Trust Cryptographic Suite & P2P")
         self.geometry("1120x760")
         self.minsize(980, 660)
 
@@ -65,20 +65,34 @@ class AegisVaultApp(ctk.CTk):
         self.current_tab = "vault"
         self.live_prices = crypto_portfolio.DEFAULT_PRICES
 
-        # Persistent P2P Chat State (Preserved across tab switches)
+        # Persistent P2P Chat State (W-01: No hardcoded default room/passkey in source)
         self.p2p_session = None
         self.p2p_message_history = []  # Stores message dicts
         self.p2p_saved_nick = ""
-        self.p2p_saved_room = "som-tim-01"
-        self.p2p_saved_key = "AegisRoom2026!"
+        self.p2p_saved_room = ""
+        self.p2p_saved_key = ""
         self.p2p_burn_enabled = False
         self.p2p_status_text = ""
 
-        # Run FIPS 140-3 Power-On Self-Tests
+        # Run FIPS 140-3 Power-On Self-Tests (V-11: Fail-Closed enforcement & truthful audit log)
         self.post_results = military_audit.run_power_on_self_tests()
-        military_audit.CryptographicAuditTrail.record_event(
-            "POST_BOOT", "System", "FIPS 140-3 Power-On Self Tests 100% Passed (NIST KAT 100%)", "INFO"
-        )
+        if self.post_results.get("all_passed", False):
+            military_audit.CryptographicAuditTrail.record_event(
+                "POST_BOOT", "System", "FIPS 140-3 Power-On Self Tests 100% Passed (NIST KAT 100%)", "INFO"
+            )
+        else:
+            failed_tests = [t.get("name", "Unknown") for t in self.post_results.get("tests", []) if not t.get("passed", False)]
+            military_audit.CryptographicAuditTrail.record_event(
+                "POST_BOOT_FAILURE",
+                "System",
+                f"CRITICAL: FIPS 140-3 Power-On Self-Tests FAILED: {', '.join(failed_tests)}",
+                "CRITICAL"
+            )
+            messagebox.showerror(
+                "FIPS 140-3 POST Failure",
+                f"CRITICAL: Cryptographic Power-On Self-Tests FAILED ({', '.join(failed_tests)}).\nOperation halted (Fail-Closed)."
+            )
+            raise RuntimeError(f"FIPS 140-3 Power-On Self-Test failed: {', '.join(failed_tests)}")
 
         # Root Container
         self.container = ctk.CTkFrame(self, corner_radius=0)
@@ -617,8 +631,8 @@ class AegisVaultApp(ctk.CTk):
         )
         sec_badge.pack(pady=(2, 10))
 
-        # FIPS 140-3 POST Badge
-        all_passed = getattr(self, "post_results", {}).get("all_passed", True)
+        # FIPS 140-3 POST Badge (V-11: Fail-closed default False)
+        all_passed = bool(self.post_results.get("all_passed", False)) if isinstance(self.post_results, dict) else False
         fips_color = "#38bdf8" if all_passed else "#ef4444"
         fips_txt = get_text("fips_badge_passed") if all_passed else get_text("fips_badge_failed")
         fips_badge = ctk.CTkLabel(
@@ -806,12 +820,22 @@ class AegisVaultApp(ctk.CTk):
         """Asynchronously queries GitHub Releases API without blocking the GUI thread."""
         def worker():
             has_up, latest_ver, down_url, notes = updater.check_for_github_update()
+            pinned_sha256 = updater.get_pinned_release_sha256(down_url) if down_url else None
 
             def show_dialog():
                 if has_up:
-                    if messagebox.askyesno("Update Available", f"AegisVault v{latest_ver} is available!\n\n{notes}\n\nDownload and install now?"):
-                        threading.Thread(target=lambda: updater.apply_executable_update(down_url), daemon=True).start()
-                        messagebox.showinfo("Downloading", "Update is downloading, application will restart automatically.")
+                    if not pinned_sha256:
+                        messagebox.showerror(
+                            "Update Rejected (V-10 Supply-Chain Shield)",
+                            f"AegisVault v{latest_ver} was found, but its release metadata does not include a pinned 64-hex SHA-256 digest.\nUnsigned/unverified binary execution blocked."
+                        )
+                        return
+                    if messagebox.askyesno("Update Available", f"AegisVault v{latest_ver} is available!\nSHA-256: {pinned_sha256[:16]}...\n\n{notes}\n\nDownload and install verified binary now?"):
+                        threading.Thread(
+                            target=lambda: updater.apply_executable_update(down_url, expected_sha256=pinned_sha256),
+                            daemon=True
+                        ).start()
+                        messagebox.showinfo("Downloading", "Verified update is downloading, application will restart automatically.")
                 else:
                     if messagebox.askyesno("Update Status", f"{notes}\n\nGitHub Releases sayfasını tarayıcıda açmak ister misiniz?"):
                         updater.open_github_releases_page()

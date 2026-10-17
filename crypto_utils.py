@@ -8,7 +8,7 @@ Crypto Utilities:
 import math
 import secrets
 import re
-from typing import List, Tuple
+from typing import List, Tuple, Any
 
 # Shamir's Secret Sharing over GF(257) Prime Field
 PRIME_257 = 257
@@ -237,16 +237,33 @@ def _sample_ternary_poly(seed32: bytes, nonce_byte: int) -> List[int]:
     return [((b & 1) - ((b >> 1) & 1)) % LWE_Q for b in raw]
 
 
+def _validate_lwe_poly(poly: Any, label: str = "polynomial") -> List[int]:
+    """Strictly validates that a polynomial has degree 256 and integer coefficients in [0, 3328]."""
+    if not isinstance(poly, list) or len(poly) != LWE_N:
+        raise ValueError(f"Invalid LWE {label} dimension (expected {LWE_N}).")
+    for idx, coeff in enumerate(poly):
+        # In Python, isinstance(True, int) is True, so check type(coeff) is int explicitly
+        if type(coeff) is not int or coeff < 0 or coeff >= LWE_Q:
+            raise ValueError(f"Malformed LWE {label} coefficient at index {idx}: out of Z_{LWE_Q} range.")
+    return poly
+
+
+def _compute_pk_digest(ecc_pub_hex: str, rho_hex: str, b_poly: List[int]) -> bytes:
+    """Computes H(pk) for Fujisaki-Okamoto (FO) IND-CCA2 domain binding."""
+    canonical = f"{ecc_pub_hex}|{rho_hex}|{json.dumps(b_poly, separators=(',', ':'))}"
+    return hashlib.sha3_256(canonical.encode("ascii")).digest()
+
+
 class PQHybridKEM:
     """
-    Post-Quantum Hybrid Key Encapsulation Engine (X25519 + Ring-LWE-256).
-    Defends against 'Harvest Now, Decrypt Later' quantum adversaries (Shor's & Grover's algorithms).
+    Post-Quantum Hybrid Key Encapsulation Engine (X25519 + Ring-LWE-256 with Fujisaki-Okamoto Transform).
+    Defends against 'Harvest Now, Decrypt Later' quantum adversaries and active CCA2 capsule tampering.
     """
 
     @staticmethod
     def generate_keypair() -> Tuple[str, str]:
         """
-        Generates a hybrid (X25519 + Ring-LWE) keypair.
+        Generates a hybrid (X25519 + Ring-LWE) keypair with Fujisaki-Okamoto re-encapsulation parameters.
         Returns: (public_key_armored, private_key_armored)
         """
         # 1. Classical X25519 Keypair
@@ -257,6 +274,7 @@ class PQHybridKEM:
         # 2. Post-Quantum Ring-LWE Keypair over Z_3329[X]/(X^256+1)
         rho = os.urandom(32)
         sigma = os.urandom(32)
+        z_reject = os.urandom(32)
         a_poly = _sample_uniform_poly(rho)
         s_poly = _sample_ternary_poly(sigma, 1)
         e_poly = _sample_ternary_poly(sigma, 2)
@@ -275,7 +293,9 @@ class PQHybridKEM:
             "ecc_priv": ecc_priv_bytes.hex(),
             "ecc_pub": ecc_pub_bytes.hex(),
             "rho": rho.hex(),
-            "s": s_poly
+            "b": b_poly,
+            "s": s_poly,
+            "z": z_reject.hex()
         }
 
         pub_b64 = "AEGIS-PQPK-v1:" + base64.b64encode(json.dumps(pub_obj, separators=(",", ":")).encode()).decode()
@@ -285,7 +305,8 @@ class PQHybridKEM:
     @staticmethod
     def encapsulate(public_key_armored: str) -> Tuple[str, str]:
         """
-        Encapsulates a 256-bit Hybrid Shared Secret against a recipient's PQ-Hybrid public key.
+        Encapsulates a 256-bit Hybrid Shared Secret against a recipient's PQ-Hybrid public key
+        using the Fujisaki-Okamoto (FO) transform G(m || H(pk)).
         Returns: (ciphertext_capsule_armored, shared_secret_hex_64)
         """
         clean = public_key_armored.strip()
@@ -295,18 +316,19 @@ class PQHybridKEM:
 
         peer_ecc_pub = x25519.X25519PublicKey.from_public_bytes(bytes.fromhex(pub_obj["ecc_pub"]))
         rho = bytes.fromhex(pub_obj["rho"])
-        b_poly = pub_obj["b"]
-        if len(b_poly) != LWE_N:
-            raise ValueError("Invalid LWE polynomial dimension.")
+        if len(rho) != 32:
+            raise ValueError("Invalid LWE rho seed length.")
+        b_poly = _validate_lwe_poly(pub_obj.get("b"), "public key b")
 
         # 1. Classical Ephemeral X25519 ECDH
         eph_ecc_priv = x25519.X25519PrivateKey.generate()
         eph_ecc_pub_bytes = eph_ecc_priv.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
         z_ecc = eph_ecc_priv.exchange(peer_ecc_pub)
 
-        # 2. Ring-LWE Encapsulation of 256-bit quantum entropy seed m
+        # 2. Ring-LWE Encapsulation with Fujisaki-Okamoto deterministic coin derivation
         m_bytes = os.urandom(32)
-        coin_seed = hashlib.sha3_256(m_bytes + os.urandom(32)).digest()
+        pk_digest = _compute_pk_digest(pub_obj["ecc_pub"], pub_obj["rho"], b_poly)
+        coin_seed = hashlib.sha3_256(m_bytes + pk_digest).digest()
 
         a_poly = _sample_uniform_poly(rho)
         r_poly = _sample_ternary_poly(coin_seed, 1)
@@ -323,9 +345,9 @@ class PQHybridKEM:
             v_i = (br_poly[i] + e2_poly[i] + (LWE_HALF_Q * bit)) % LWE_Q
             v_poly.append(v_i)
 
-        # 3. Combine Classical ECDH + Post-Quantum LWE via HKDF-SHA512
+        # 3. Combine Classical ECDH + Post-Quantum LWE + Capsule Transcript via HKDF-SHA512
         transcript_hash = hashlib.sha3_256(
-            eph_ecc_pub_bytes + bytes(str(u_poly) + str(v_poly), "ascii")
+            eph_ecc_pub_bytes + pk_digest + bytes(str(u_poly) + str(v_poly), "ascii")
         ).digest()
 
         hkdf = HKDF(
@@ -348,7 +370,8 @@ class PQHybridKEM:
     @staticmethod
     def decapsulate(ciphertext_armored: str, private_key_armored: str) -> str:
         """
-        Decapsulates a PQ-Hybrid Ciphertext Capsule and recovers the 256-bit Hybrid Shared Secret.
+        Decapsulates a PQ-Hybrid Ciphertext Capsule, strictly validates Z_3329 coefficient bounds,
+        and enforces Fujisaki-Okamoto (FO) IND-CCA2 re-encapsulation integrity verification.
         Returns: shared_secret_hex_64
         """
         clean_ct = ciphertext_armored.strip()
@@ -360,12 +383,12 @@ class PQHybridKEM:
         sk_obj = json.loads(base64.b64decode(clean_sk[len("AEGIS-PQSK-v1:"):]).decode())
 
         eph_ecc_pub_bytes = bytes.fromhex(ct_obj["epk"])
-        u_poly = ct_obj["u"]
-        v_poly = ct_obj["v"]
-        s_poly = sk_obj["s"]
+        if len(eph_ecc_pub_bytes) != 32:
+            raise ValueError("Invalid ephemeral X25519 public key length.")
 
-        if len(u_poly) != LWE_N or len(v_poly) != LWE_N or len(s_poly) != LWE_N:
-            raise ValueError("Invalid LWE polynomial dimension.")
+        u_poly = _validate_lwe_poly(ct_obj.get("u"), "ciphertext u")
+        v_poly = _validate_lwe_poly(ct_obj.get("v"), "ciphertext v")
+        s_poly = _validate_lwe_poly(sk_obj.get("s"), "secret key s")
 
         # 1. Classical X25519 ECDH recovery
         ecc_priv = x25519.X25519PrivateKey.from_private_bytes(bytes.fromhex(sk_obj["ecc_priv"]))
@@ -377,15 +400,43 @@ class PQHybridKEM:
         m_bytes = bytearray(32)
         for i in range(LWE_N):
             d_i = (v_poly[i] - us_poly[i]) % LWE_Q
-            # Closest to 1665 vs 0 (mod 3329)
             dist_to_half = abs(d_i - LWE_HALF_Q)
             bit = 1 if dist_to_half < (LWE_Q // 4) else 0
             if bit:
                 m_bytes[i // 8] |= (1 << (i % 8))
 
-        # 3. Derive identical 256-bit Hybrid Shared Secret via HKDF-SHA512
+        # 3. Fujisaki-Okamoto (FO) IND-CCA2 Re-Encapsulation Check
+        rho_hex = sk_obj.get("rho", "")
+        rho = bytes.fromhex(rho_hex)
+        a_poly = _sample_uniform_poly(rho)
+        b_poly = sk_obj.get("b")
+        if b_poly is not None:
+            b_poly = _validate_lwe_poly(b_poly, "public key b")
+            pk_digest = _compute_pk_digest(sk_obj["ecc_pub"], rho_hex, b_poly)
+            coin_seed = hashlib.sha3_256(bytes(m_bytes) + pk_digest).digest()
+
+            r_poly = _sample_ternary_poly(coin_seed, 1)
+            e1_poly = _sample_ternary_poly(coin_seed, 2)
+            e2_poly = _sample_ternary_poly(coin_seed, 3)
+
+            ar_poly = _poly_mul_mod(a_poly, r_poly)
+            u_expected = [(ar_poly[i] + e1_poly[i]) % LWE_Q for i in range(LWE_N)]
+
+            br_poly = _poly_mul_mod(b_poly, r_poly)
+            v_expected = []
+            for i in range(LWE_N):
+                bit = (m_bytes[i // 8] >> (i % 8)) & 1
+                v_i = (br_poly[i] + e2_poly[i] + (LWE_HALF_Q * bit)) % LWE_Q
+                v_expected.append(v_i)
+
+            if u_poly != u_expected or v_poly != v_expected:
+                raise ValueError("Fujisaki-Okamoto (IND-CCA2) capsule integrity check failed: tampered ciphertext rejected!")
+        else:
+            pk_digest = b""
+
+        # 4. Derive identical 256-bit Hybrid Shared Secret via HKDF-SHA512
         transcript_hash = hashlib.sha3_256(
-            eph_ecc_pub_bytes + bytes(str(u_poly) + str(v_poly), "ascii")
+            eph_ecc_pub_bytes + pk_digest + bytes(str(u_poly) + str(v_poly), "ascii")
         ).digest()
 
         hkdf = HKDF(
@@ -396,4 +447,5 @@ class PQHybridKEM:
         )
         hybrid_secret = hkdf.derive(z_ecc + bytes(m_bytes))
         return hybrid_secret.hex()
+
 

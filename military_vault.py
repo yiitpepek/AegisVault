@@ -1,13 +1,14 @@
 """
-Military-Grade Cryptographic Vault (Cold-Storage Cryptographic Engine)
+Zero-Trust Post-Quantum Cold-Storage Cryptographic Engine
 Standards:
-- Symmetric Encryption: AES-256-GCM (NIST SP 800-38D / NSA CNSA Suite)
-- Key Derivation Function (KDF): scrypt (BIP-38 & Ethereum Web3 Keystore Standard, GPU/ASIC resistant)
+- Symmetric Encryption: AES-256-GCM (NIST SP 800-38D / CNSA 2.0 Suite)
+- Key Derivation Function (KDF): scrypt (BIP-38 & Web3 Keystore Standard, GPU/ASIC resistant)
 - Authenticated Data Integrity: AEAD (Authenticated Encryption with Associated Data)
 - Entropy Source: Cryptographically Secure Pseudo-Random Number Generator (CSPRNG - os.urandom)
 """
 
 import os
+import ctypes
 import struct
 import base64
 import sys
@@ -23,10 +24,10 @@ class VaultSecurityError(Exception):
 
 class MilitaryVault:
     """
-    High-assurance military-grade cryptographic engine combining AES-256-GCM and scrypt.
+    High-assurance cold-storage cryptographic engine combining AES-256-GCM and scrypt.
     
     Architecture:
-    - 256-bit key length (Top Secret classification equivalent)
+    - 256-bit key length
     - 96-bit unique Nonce/IV per encryption (NIST SP 800-38D compliant)
     - scrypt memory-hard KDF (Defeats GPU/ASIC brute-force dictionary attacks)
     - Authenticated Additional Data (AAD): Cryptographic parameters and versioning sealed into header
@@ -61,10 +62,20 @@ class MilitaryVault:
     @classmethod
     def _zero_memory(cls, target: Union[bytearray, memoryview]):
         """
-        Zeroes out sensitive memory buffers (passwords/keys) before garbage collection
-        to minimize exposure to memory dump attacks.
+        Best-effort zeroization of mutable sensitive memory buffers (bytearray/memoryview)
+        prior to garbage collection using in-place byte clearing and ctypes.memset.
+        Note (V-18): CPython immutable objects (`str`, `bytes`) cannot be zeroed safely
+        in-place without risking interpreter heap corruption; callers should prefer
+        `bytearray` buffers and short-lived scopes for derived keys.
         """
-        if isinstance(target, bytearray):
+        if isinstance(target, bytearray) and len(target) > 0:
+            try:
+                buf_type = ctypes.c_char * len(target)
+                ctypes.memset(buf_type.from_buffer(target), 0, len(target))
+            except Exception:
+                for i in range(len(target)):
+                    target[i] = 0
+        elif isinstance(target, memoryview) and not target.readonly:
             for i in range(len(target)):
                 target[i] = 0
 
@@ -155,7 +166,8 @@ class MilitaryVault:
             VaultSecurityError: On invalid password, payload tampering, or authentication failure.
         """
         try:
-            raw_data = base64.b64decode(armored_payload.strip().encode("ascii"))
+            first_slot = armored_payload.strip().splitlines()[0].strip() if armored_payload.strip() else ""
+            raw_data = base64.b64decode(first_slot.encode("ascii"))
         except Exception as e:
             raise VaultSecurityError("Invalid packet format: Base64 decoding failed.") from e
 

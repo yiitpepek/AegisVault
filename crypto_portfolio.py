@@ -9,6 +9,7 @@ Features:
 
 import json
 import re
+import urllib.parse
 import urllib.request
 from typing import Dict, List, Any, Tuple
 
@@ -53,17 +54,25 @@ def validate_crypto_address(coin: str, address: str) -> Tuple[bool, str]:
         else:
             return False, "Invalid Solana address!"
 
-    return True, "Unknown format"
+    return False, "Unsupported coin identifier."
 
 
 def fetch_live_btc_balance(address: str) -> float:
     """
     Fetches real-time satoshi balance from official Blockchain.info nodes and converts to BTC.
+    Enforces defense-in-depth address validation and strict URL path encoding (V-17).
     """
+    if not isinstance(address, str):
+        return 0.0
     addr = address.strip()
-    url = f"https://blockchain.info/q/addressbalance/{addr}"
+    is_valid, _ = validate_crypto_address("BTC", addr)
+    if not is_valid:
+        return 0.0
+
+    safe_addr = urllib.parse.quote(addr, safe="")
+    url = f"https://blockchain.info/q/addressbalance/{safe_addr}"
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "AegisVault/4.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": "AegisVault/4.1"})
         with urllib.request.urlopen(req, timeout=4.0) as resp:
             if resp.status == 200:
                 satoshis = int(resp.read().decode())

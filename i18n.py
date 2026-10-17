@@ -12,7 +12,7 @@ LANGUAGES = {
 TRANSLATIONS = {
     "tr": {
         # App Header & Navigation
-        "app_title": "AegisVault 4.0.0 - Zero-Trust & Post-Quantum Kripto İstasyonu",
+        "app_title": "AegisVault 4.1.0 - Zero-Trust & Post-Quantum Kripto İstasyonu",
         "tagline": "AES-256-GCM + scrypt (BIP-38) Destekli Güvenlik Kasası",
         "status_active": "● AES-256-GCM | AKTİF",
         "status_decoy": "● AES-256-GCM | AKTİF",
@@ -231,7 +231,7 @@ TRANSLATIONS = {
     
     "en": {
         # App Header & Navigation
-        "app_title": "AegisVault 4.0.0 - Zero-Trust Cryptographic Suite & P2P",
+        "app_title": "AegisVault 4.1.0 - Zero-Trust Cryptographic Suite & P2P",
         "tagline": "AES-256-GCM + scrypt (BIP-38) Encrypted Vault",
         "status_active": "● AES-256-GCM | ACTIVE",
         "status_decoy": "● AES-256-GCM | ACTIVE",
@@ -450,7 +450,7 @@ TRANSLATIONS = {
     
     "ru": {
         # App Header & Navigation
-        "app_title": "AegisVault 4.0.0 - Военная Безопасность и Криптосистема",
+        "app_title": "AegisVault 4.1.0 - Военная Безопасность и Криптосистема",
         "tagline": "Шифрованное хранилище AES-256-GCM + scrypt (BIP-38)",
         "status_active": "● AES-256-GCM | АКТИВНО",
         "status_decoy": "● AES-256-GCM | АКТИВНО",
